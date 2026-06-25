@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7.0-alpine
+    container_name: polymarket-bot-redis
+    ports:
+      - "6379:6379"
+    restart: always
+
+  dota-dltv-scraper:
+    build:
+      context: ./services/dota-dltv-scraper
+      dockerfile: Dockerfile
+    container_name: dota-dltv-scraper
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    restart: always
+
+  dota-db-enricher:
+    build:
+      context: ./services/dota-db-enricher
+      dockerfile: Dockerfile
+    container_name: dota-db-enricher
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    restart: always
+
+  betting-engine:
+    build:
+      context: ./services/betting-engine
+      dockerfile: Dockerfile
+    container_name: betting-engine
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    restart: always
+
+  polymarket-executor:
+    build:
+      context: ./services/polymarket-executor
+      dockerfile: Dockerfile
+    container_name: polymarket-executor
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      # Mount the local bets_log.jsonl so the container's executor can write directly to the host
+      - ./bets_log.jsonl:/app/bets_log.jsonl
+    depends_on:
+      - redis
+    restart: always
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - API_PORT=5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./dashboard.html:/app/dashboard.html
+      - ./dashboard.css:/app/dashboard.css
+    depends_on:
+      - redis
+    restart: always

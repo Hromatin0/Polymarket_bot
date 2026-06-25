@@ -1,0 +1,4 @@
+redis==5.0.4
+python-dotenv==1.0.1
+py-clob-client>=0.34.0
+requests==2.32.3

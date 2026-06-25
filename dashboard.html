@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DOTA 2 · Stats Tracker</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-hex"></div>
+    <div>
+      <div class="logo-text">DOTA · STATS</div>
+      <div class="logo-sub">DLTV → Dotabuff</div>
+    </div>
+  </div>
+  <div class="hbar">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <div class="dot" id="dot"></div>
+      <span class="upd-time" id="upd-time">—</span>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="main">
+    <div class="main-inner">
+      <div>
+        <div class="sec-head">📜 Recent Matches
+          <span class="sec-cnt" id="cnt-history">0</span>
+          <button class="toggle-btn" id="history-toggle" onclick="toggleHistory()">hide</button>
+        </div>
+        <div id="history-list" class="collapsible"></div>
+      </div>
+      <div>
+        <div class="sec-head">🎮 Live Matches
+          <span class="sec-cnt cnt-red" id="cnt-live">0</span>
+        </div>
+        <div id="sleep-banner"></div>
+        <div id="matches-list"></div>
+      </div>
+      <div>
+        <div class="sec-head">🕐 Upcoming Matches
+          <span class="sec-cnt" id="cnt-upcoming">0</span>
+          <button class="toggle-btn" id="upcoming-toggle" onclick="toggleUpcoming()">hide</button>
+        </div>
+        <div id="upcoming-list" class="collapsible"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = `http://${window.location.hostname || '127.0.0.1'}:5000/api`;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Map label ─────────────────────────────────────────────────────────────────
+function mapLabel(mp) {
+  const st = mp.status || 'upcoming';
+  let sub = '';
+  if (st === 'running') {
+    sub = `<span class="sub live">LIVE</span>`;
+  } else if (st === 'upcoming') {
+    sub = `<span class="sub" style="color:var(--muted)">soon</span>`;
+  }
+  return `<div class="map-label">MAP ${mp.num}${sub}</div>`;
+}
+
+// ── Dota 2 day/night cycle ────────────────────────────────────────────────────
+// 0:00–5:00 → day, 5:00–10:00 → night, 10:00–15:00 → day … (5 min blocks)
+function isDaytime(duration) {
+  if (!duration) return null;
+  const m = duration.match(/^(\d+):(\d{2})$/);
+  if (!m) return null;
+  const totalSec = parseInt(m[1]) * 60 + parseInt(m[2]);
+  const block = Math.floor(totalSec / 300); // 0=0-5min, 1=5-10min, …
+  return block % 2 === 0;                   // even block = day
+}
+
+// ── Multikill rank lookup ─────────────────────────────────────────────────────
+const MK_RANK = { 'Rampage': 5, 'Ultra Kill': 4, 'Triple Kill': 3, 'Double Kill': 2 };
+
+function mkRank(label) {
+  return MK_RANK[label] || 0;
+}
+
+// ── Yes/No row builder ────────────────────────────────────────────────────────
+function ynRow(label, yn, extra) {
+  const badge = yn === true
+    ? `<span class="yn-yes">Yes</span>`
+    : yn === false
+      ? `<span class="yn-no">No</span>`
+      : '';
+  const valHTML = extra != null && extra !== ''
+    ? `<span class="yn-val">${esc(String(extra))}</span>`
+    : '';
+  return `<div class="db-stat-row">
+    <span class="db-stat-label">${label}</span>
+    <div class="db-stat-vals">${badge}${valHTML}</div>
+  </div>`;
+}
+
+// ── Render dotabuff column ────────────────────────────────────────────────────
+function renderDbCol(mp, t1, t2) {
+  const phase  = mp.db_phase || '';
+  const status = mp.status   || 'upcoming';
+
+  // Match ID link
+  const idHTML = mp.dota2_match_id
+    ? `<a href="https://www.dotabuff.com/matches/${mp.dota2_match_id}" target="_blank"
+         style="font-family:var(--font-h);font-size:10px;font-weight:700;color:var(--cyan);margin-bottom:8px;display:block;"
+       >#${mp.dota2_match_id}</a>`
+    : `<span style="font-family:var(--font-h);font-size:9px;color:var(--muted);margin-bottom:8px;display:block;">— no ID</span>`;
+
+  const rows = [];
+
+  // ── FB (First Blood) ──────────────────────────────────────────────────────
+  if (mp.fb_radiant || mp.fb_dire) {
+    const fbTeam = mp.fb_radiant
+      ? (mp.radiant_team || t1)
+      : (mp.dire_team    || t2);
+    rows.push(`<div class="db-stat-row">
+      <span class="db-stat-label">🔪 FB</span>
+      <div class="db-stat-vals">
+        <span class="db-val fb">${esc(fbTeam)}</span>
+      </div>
+    </div>`);
+  }
+
+  // ── Ends in Daytime — as soon as match finishes on DLTV ──────────────────
+  // Use DLTV duration (mp.duration) first; fallback → Dotabuff (mp.db_duration)
+  // Priority: db_duration (Dotabuff, final) > duration (DLTV, may be unreliable)
+  const durForDay = mp.db_duration || mp.duration || null;
+  if (status === 'finished' && durForDay) {
+    const daytime = isDaytime(durForDay);
+    rows.push(ynRow('🌅 Ends in Daytime', daytime, durForDay));
+  }
+
+  // ── Roshan & Barracks ─────────────────────────────────────────────────────
+  if (phase === 'full') {
+    const rosR = mp.db_roshans_radiant  || 0;
+    const rosD = mp.db_roshans_dire     || 0;
+    const barR = mp.db_barracks_radiant || 0;
+    const barD = mp.db_barracks_dire    || 0;
+
+    rows.push(ynRow('🐉 Both Teams Beat Roshan',      rosR >= 1 && rosD >= 1, `${rosR}-${rosD}`));
+    rows.push(ynRow('🏛 Both Teams Destroy Barracks', barR >= 1 && barD >= 1, `${barR}-${barD}`));
+  }
+
+  // ── Multi-kill — show ranks of both teams as numbers (e.g. "4-2") ─────────
+  if (phase === 'full') {
+    const mkR = mp.db_multikill_radiant || null;
+    const mkD = mp.db_multikill_dire    || null;
+    const rkR = mkRank(mkR);
+    const rkD = mkRank(mkD);
+    const maxRk  = Math.max(rkR, rkD);
+    const mkExtra = `${rkR}-${rkD}`;
+
+    rows.push(ynRow('⚔️ Any Player Ultra Kill', maxRk >= 4, mkExtra));
+    rows.push(ynRow('💀 Any Player Rampage',    maxRk >= 5, mkExtra));
+  }
+
+  return `<div class="db-col">
+    ${idHTML}
+    ${rows.length ? `<div class="db-stat-grid">${rows.join('')}</div>` : ''}
+  </div>`;
+}
+
+// ── Render DLTV column ────────────────────────────────────────────────────────
+function renderDltvCol(mp, t1, t2) {
+  const st = mp.status || 'upcoming';
+
+  // Team names taken directly from DLTV (radiant_team / dire_team),
+  // series t1/t2 only as fallback if DLTV hasn't loaded map data yet
+  const nameL = mp.radiant_team || t1;
+  const nameR = mp.dire_team    || t2;
+
+  const k1 = mp.kills_radiant;   // Radiant kills (left column)
+  const k2 = mp.kills_dire;      // Dire kills    (right column)
+
+  let leftClass  = 'kteam';
+  let rightClass = 'kteam right';
+
+  // Timer (always on top, outside kills-row)
+  let timerHTML = '';
+  if (st === 'running' && mp.game_time) {
+    const timeText = mp.game_time === 'Draft...' ? 'Draft...' : mp.game_time;
+    timerHTML = `<div class="map-time live" style="margin-bottom:6px;">⏱ ${esc(timeText)}</div>`;
+  } else if (st === 'finished') {
+    // duration has priority; if not received — show game_time
+    const dur = mp.duration || mp.game_time;
+    if (dur) timerHTML = `<div class="map-time done" style="margin-bottom:6px;">⏱ ${esc(dur)}</div>`;
+  }
+
+  // Score only (without timer)
+  let killsHTML = '';
+  if (k1 != null && k2 != null) {
+    let cls1 = 'sm';
+    let cls2 = 'sm';
+
+    if (st === 'finished') {
+      if (k1 > k2) {
+        leftClass = 'kteam win';
+        cls1 = 'win'; cls2 = 'lose';
+      } else if (k2 > k1) {
+        rightClass = 'kteam right win';
+        cls1 = 'lose'; cls2 = 'win';
+      } else {
+        cls1 = cls2 = 'win';
+      }
+    } else if (st === 'running') {
+      cls1 = cls2 = 'live';
+    }
+
+    killsHTML = `
+      <div class="k-scores">
+        <span class="knum ${cls1}">${k1}</span>
+        <span class="ksep">:</span>
+        <span class="knum ${cls2}">${k2}</span>
+      </div>`;
+  } else if (st === 'running') {
+    killsHTML = `<div class="k-scores" style="justify-content:center;color:var(--yellow);font-size:10px;">▶ in game…</div>`;
+  } else if (st === 'upcoming') {
+    killsHTML = `<div class="k-scores" style="justify-content:center;color:var(--muted);font-size:10px;">— upcoming —</div>`;
+  }
+
+  return `<div class="dltv-col">
+    ${timerHTML}
+    <div class="kills-row">
+      <span class="${leftClass}">${esc(nameL)}</span>
+      ${killsHTML}
+      <span class="${rightClass}">${esc(nameR)}</span>
+    </div>
+  </div>`;
+}
+// ── Render full match card ────────────────────────────────────────────────────
+function renderMatch(m) {
+  const t1 = m.team1 || '?';
+  const t2 = m.team2 || '?';
+  const s1 = m.score1 ?? 0;
+  const s2 = m.score2 ?? 0;
+  const bo = m.bo || 3;
+  const ev = m.event || 'Dota 2';
+
+  let mapsHTML = '';
+  (m.maps || []).forEach(mp => {
+    const st = mp.status || 'upcoming';
+    mapsHTML += `
+    <div class="map-row ${st}">
+      ${mapLabel(mp)}
+      ${renderDltvCol(mp, t1, t2)}
+      ${renderDbCol(mp, t1, t2)}
+    </div>`;
+  });
+
+  return `
+  <div class="match-card">
+    <div class="match-head">
+      <span class="match-event">${esc(ev)}</span>
+      <a href="${esc(m.url)}" target="_blank" class="match-url">dltv ↗</a>
+    </div>
+    <div class="series-row">
+      <div class="team-blk">
+        <div class="team-n">${esc(t1)}</div>
+        <div class="team-side">BO${bo}</div>
+      </div>
+      <div class="series-score-box">
+        <div class="series-score">${s1}&nbsp;:&nbsp;${s2}</div>
+        <div class="series-bo">series</div>
+      </div>
+      <div class="team-blk right">
+        <div class="team-n">${esc(t2)}</div>
+      </div>
+    </div>
+    <div class="maps-block">
+      ${mapsHTML || '<div style="padding:12px 16px;color:var(--muted);font-size:10px;">No map data available</div>'}
+    </div>
+  </div>`;
+}
+
+// ── Render upcoming match card ────────────────────────────────────────────────
+function renderUpcoming(u) {
+  const t1      = u.team1 || '?';
+  const t2      = u.team2 || '?';
+  const bo      = u.bo || 3;
+  const ev      = u.event || 'Dota 2';
+  const bracket = u.bracket || '';
+  const time    = u.display_time || u.match_time?.slice(11,16) || '?';
+  const date    = u.display_date || '';
+
+  let countdown = '';
+  if (u.remaining_sec > 0) {
+    const h = Math.floor(u.remaining_sec / 3600);
+    const mn = Math.floor((u.remaining_sec % 3600) / 60);
+    countdown = h > 0 ? `in ${h}h ${mn}m` : `in ${mn}m`;
+  }
+
+  return `<div class="upcoming-card">
+    <div class="uc-team">
+      <div class="uc-name">${esc(t1)}</div>
+      <div class="uc-event">${esc(ev)}</div>
+      ${bracket ? `<div class="uc-bracket">${esc(bracket)}</div>` : ''}
+    </div>
+    <div class="uc-center">
+      <div class="uc-time">${esc(time)}</div>
+      ${date ? `<div class="uc-date">${esc(date)}</div>` : ''}
+      <div class="uc-bo">BO${bo}${countdown ? ' · ' + countdown : ''}</div>
+    </div>
+    <div class="uc-team right">
+      <div class="uc-name">${esc(t2)}</div>
+    </div>
+  </div>`;
+}
+
+// ── Render history match (same as live but with date badge) ───────────────────
+function renderHistoryMatch(m) {
+  const t1 = m.team1 || '?';
+  const t2 = m.team2 || '?';
+  const s1 = m.score1 ?? 0;
+  const s2 = m.score2 ?? 0;
+  const bo = m.bo || 3;
+  const ev = m.event || 'Dota 2';
+  const timeStr = m.display_time ? `${m.display_time} ${m.display_date || ''}`.trim() : '';
+
+  let mapsHTML = '';
+  (m.maps || []).forEach(mp => {
+    const st = mp.status || 'upcoming';
+    mapsHTML += `
+    <div class="map-row ${st}">
+      ${mapLabel(mp)}
+      ${renderDltvCol(mp, t1, t2)}
+      ${renderDbCol(mp, t1, t2)}
+    </div>`;
+  });
+
+  // Winner highlight
+  const s1win = s1 > s2, s2win = s2 > s1;
+
+  return `
+  <div class="match-card" style="opacity:.85;">
+    <div class="match-head">
+      <span class="match-event">${esc(ev)}${timeStr ? ` · <span style="color:var(--dim)">${esc(timeStr)}</span>` : ''}</span>
+      <a href="${esc(m.url)}" target="_blank" class="match-url">dltv ↗</a>
+    </div>
+    <div class="series-row">
+      <div class="team-blk">
+        <div class="team-n" style="${s1win ? 'color:var(--green)' : s2win ? 'color:var(--muted)' : ''}">${esc(t1)}</div>
+        <div class="team-side">BO${bo}</div>
+      </div>
+      <div class="series-score-box">
+        <div class="series-score">${s1}&nbsp;:&nbsp;${s2}</div>
+        <div class="series-bo">final</div>
+      </div>
+      <div class="team-blk right">
+        <div class="team-n" style="${s2win ? 'color:var(--green)' : s1win ? 'color:var(--muted)' : ''}">${esc(t2)}</div>
+      </div>
+    </div>
+    <div class="maps-block">
+      ${mapsHTML || '<div style="padding:12px 16px;color:var(--muted);font-size:10px;">Loading maps…</div>'}
+    </div>
+  </div>`;
+}
+
+// ── Refresh ───────────────────────────────────────────────────────────────────
+async function refresh() {
+  let data;
+  try {
+    const r = await fetch(API, { cache: 'no-store' });
+    data = await r.json();
+    document.getElementById('dot').className = 'dot';
+  } catch(e) {
+    document.getElementById('dot').className = 'dot err';
+    console.error("Fetch error:", e);
+    return;
+  }
+
+  document.getElementById('upd-time').textContent = (data.updated_at || '—');
+
+  const live     = data.live_matches     || [];
+  const upcoming = data.upcoming_matches || [];
+  const history  = data.history_matches  || [];
+  const sleep    = data.sleep_info       || {};
+
+  // ── Live section
+  document.getElementById('cnt-live').textContent = live.length;
+  document.getElementById('matches-list').innerHTML = live.length
+    ? live.map(renderMatch).join('')
+    : `<div class="empty">📡 No live matches on DLTV</div>`;
+
+  // ── Sleep banner
+  const bannerEl = document.getElementById('sleep-banner');
+  if (sleep.sleeping && sleep.next_match) {
+    bannerEl.innerHTML = `<div class="sleep-banner">
+      <span class="sb-icon">⏳</span>
+      <div class="sb-main">
+        Next scan at <strong>${esc(sleep.until)}</strong>
+        — waiting for match <span class="sb-next">${esc(sleep.next_match)}</span>
+        ${sleep.next_time ? `(${esc(sleep.next_time)} ${esc(sleep.next_date)})` : ''}
+        · <strong>${sleep.remaining_min} min</strong> remaining
+      </div>
+    </div>`;
+  } else {
+    bannerEl.innerHTML = '';
+  }
+
+  // ── Upcoming section
+  document.getElementById('cnt-upcoming').textContent = upcoming.length;
+  document.getElementById('upcoming-list').innerHTML = upcoming.length
+    ? upcoming.map(renderUpcoming).join('')
+    : `<div class="empty">—</div>`;
+
+  // ── History section (last 3 matches, always shown)
+  const histSlice = history.slice(0, 3);
+  document.getElementById('cnt-history').textContent = histSlice.length;
+  document.getElementById('history-list').innerHTML = histSlice.length
+    ? histSlice.map(renderHistoryMatch).join('')
+    : `<div class="empty">— no finished match data —</div>`;
+}
+
+refresh();
+setInterval(refresh, 3000);
+
+// ── History toggle ────────────────────────────────────────────────────────────
+let historyVisible = true;
+function toggleHistory() {
+  historyVisible = !historyVisible;
+  const list = document.getElementById('history-list');
+  const btn  = document.getElementById('history-toggle');
+  if (historyVisible) {
+    list.style.maxHeight = list.scrollHeight + 'px';
+    list.classList.remove('collapsed');
+    btn.textContent = 'hide';
+    setTimeout(() => { list.style.maxHeight = ''; }, 320);
+  } else {
+    list.style.maxHeight = list.scrollHeight + 'px';
+    requestAnimationFrame(() => {
+      list.style.maxHeight = '0px';
+      list.classList.add('collapsed');
+    });
+    btn.textContent = 'show';
+  }
+}
+
+// ── Upcoming toggle ───────────────────────────────────────────────────────────
+let upcomingVisible = true;
+function toggleUpcoming() {
+  upcomingVisible = !upcomingVisible;
+  const list = document.getElementById('upcoming-list');
+  const btn  = document.getElementById('upcoming-toggle');
+  if (upcomingVisible) {
+    list.style.maxHeight = list.scrollHeight + 'px';
+    list.classList.remove('collapsed');
+    btn.textContent = 'hide';
+    setTimeout(() => { list.style.maxHeight = ''; }, 320);
+  } else {
+    list.style.maxHeight = list.scrollHeight + 'px';
+    requestAnimationFrame(() => {
+      list.style.maxHeight = '0px';
+      list.classList.add('collapsed');
+    });
+    btn.textContent = 'show';
+  }
+}
+</script>
+</body>
+</html>

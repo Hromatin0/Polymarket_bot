@@ -1,0 +1,69 @@
+# Custom ignores requested by user
+/BACKUP/
+/Weather/
+/tests/
+/monolith_backups/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and local databases
+*.log
+*.jsonl
+
+# Python cache & build files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python virtual environments
+.venv
+venv/
+ENV/
+env/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+.coverage
+.pytest_cache/
+htmlcov/
